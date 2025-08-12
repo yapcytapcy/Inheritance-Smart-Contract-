@@ -5,18 +5,30 @@
 (define-constant ERR-HEIR-NOT-FOUND (err u104))
 (define-constant ERR-ALREADY-HEIR (err u105))
 (define-constant ERR-INVALID-BLOCKS (err u106))
+(define-constant ERR-EMERGENCY-ACTIVE (err u107))
+(define-constant ERR-ALREADY-VOTED (err u108))
+(define-constant ERR-EMERGENCY-NOT-ACTIVE (err u109))
 
 (define-constant MAX-HEIRS u5)
 (define-constant PERCENTAGE-POINTS u10000)
+(define-constant EMERGENCY-VOTING-BLOCKS u2628)
+(define-constant EMERGENCY-THRESHOLD u6667)
 
 (define-data-var contract-owner principal tx-sender)
 (define-data-var last-activity uint stacks-block-height)
 (define-data-var inactivity-blocks uint u52560)
 (define-data-var total-heirs uint u0)
+(define-data-var emergency-voting-start uint u0)
+(define-data-var emergency-votes uint u0)
 
 (define-map heirs 
     principal 
     {share: uint, index: uint}
+)
+
+(define-map emergency-voters
+    principal
+    bool
 )
 
 (define-read-only (get-owner)
@@ -52,10 +64,33 @@
     (>= (- current-height last-active) inactive-period))
 )
 
+(define-read-only (get-emergency-votes)
+    (var-get emergency-votes)
+)
+
+(define-read-only (get-emergency-voting-start)
+    (var-get emergency-voting-start)
+)
+
+(define-read-only (is-emergency-active)
+    (let (
+        (voting-start (var-get emergency-voting-start))
+        (current-height stacks-block-height)
+    )
+    (and (> voting-start u0) 
+         (< (- current-height voting-start) EMERGENCY-VOTING-BLOCKS)))
+)
+
+(define-read-only (has-voted-emergency (voter principal))
+    (default-to false (map-get? emergency-voters voter))
+)
+
 (define-public (update-activity)
     (begin
         (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
         (var-set last-activity stacks-block-height)
+        (var-set emergency-voting-start u0)
+        (var-set emergency-votes u0)
         (ok true)
     )
 )
@@ -136,5 +171,53 @@
         (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
         (var-set contract-owner new-owner)
         (ok true)
+    )
+)
+
+(define-public (initiate-emergency-recovery)
+    (begin
+        (asserts! (is-heir tx-sender) ERR-HEIR-NOT-FOUND)
+        (asserts! (not (is-emergency-active)) ERR-EMERGENCY-ACTIVE)
+        (var-set emergency-voting-start stacks-block-height)
+        (var-set emergency-votes u0)
+        (ok true)
+    )
+)
+
+(define-public (vote-emergency-recovery)
+    (begin
+        (asserts! (is-heir tx-sender) ERR-HEIR-NOT-FOUND)
+        (asserts! (is-emergency-active) ERR-EMERGENCY-NOT-ACTIVE)
+        (asserts! (not (has-voted-emergency tx-sender)) ERR-ALREADY-VOTED)
+        
+        (map-set emergency-voters tx-sender true)
+        (var-set emergency-votes (+ (var-get emergency-votes) u1))
+        (ok true)
+    )
+)
+
+(define-public (claim-emergency-inheritance)
+    (let (
+        (current-votes (var-get emergency-votes))
+        (total-heir-count (var-get total-heirs))
+        (voting-threshold (/ (* total-heir-count EMERGENCY-THRESHOLD) PERCENTAGE-POINTS))
+        (heir-data (map-get? heirs tx-sender))
+        (contract-balance (stx-get-balance (as-contract tx-sender)))
+        (voting-start (var-get emergency-voting-start))
+        (current-height stacks-block-height)
+    )
+        (asserts! (is-emergency-active) ERR-EMERGENCY-NOT-ACTIVE)
+        (asserts! (>= current-votes voting-threshold) ERR-NOT-AUTHORIZED)
+        (asserts! (>= (- current-height voting-start) EMERGENCY-VOTING-BLOCKS) ERR-NOT-AUTHORIZED)
+        (asserts! (is-some heir-data) ERR-HEIR-NOT-FOUND)
+        
+        (let (
+            (heir-share (get share (unwrap! heir-data ERR-HEIR-NOT-FOUND)))
+            (amount-to-transfer (/ (* contract-balance heir-share) PERCENTAGE-POINTS))
+        )
+            (as-contract
+                (stx-transfer? amount-to-transfer tx-sender tx-sender)
+            )
+        )
     )
 )
