@@ -13,6 +13,7 @@
 (define-constant PERCENTAGE-POINTS u10000)
 (define-constant EMERGENCY-VOTING-BLOCKS u2628)
 (define-constant EMERGENCY-THRESHOLD u6667)
+(define-constant EMERGENCY-TIMEOUT-BLOCKS u5256)
 
 (define-data-var contract-owner principal tx-sender)
 (define-data-var last-activity uint stacks-block-height)
@@ -78,8 +79,15 @@
         (current-height stacks-block-height)
     )
     (and (> voting-start u0) 
-         (< (- current-height voting-start) EMERGENCY-VOTING-BLOCKS)))
-)
+         (< (- current-height voting-start) EMERGENCY-VOTING-BLOCKS))))
+
+(define-read-only (is-emergency-expired)
+    (let (
+        (voting-start (var-get emergency-voting-start))
+        (current-height stacks-block-height)
+    )
+    (and (> voting-start u0)
+         (>= (- current-height voting-start) EMERGENCY-TIMEOUT-BLOCKS))))
 
 (define-read-only (has-voted-emergency (voter principal))
     (default-to false (map-get? emergency-voters voter))
@@ -178,6 +186,13 @@
     (begin
         (asserts! (is-heir tx-sender) ERR-HEIR-NOT-FOUND)
         (asserts! (not (is-emergency-active)) ERR-EMERGENCY-ACTIVE)
+        (if (is-emergency-expired)
+            (begin
+                (var-set emergency-voting-start u0)
+                (var-set emergency-votes u0)
+            )
+            true
+        )
         (var-set emergency-voting-start stacks-block-height)
         (var-set emergency-votes u0)
         (ok true)
@@ -219,5 +234,14 @@
                 (stx-transfer? amount-to-transfer tx-sender tx-sender)
             )
         )
+    )
+)
+
+(define-public (reset-expired-emergency)
+    (begin
+        (asserts! (is-emergency-expired) ERR-EMERGENCY-NOT-ACTIVE)
+        (var-set emergency-voting-start u0)
+        (var-set emergency-votes u0)
+        (ok true)
     )
 )
