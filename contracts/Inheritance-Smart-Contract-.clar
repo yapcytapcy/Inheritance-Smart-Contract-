@@ -8,12 +8,16 @@
 (define-constant ERR-EMERGENCY-ACTIVE (err u107))
 (define-constant ERR-ALREADY-VOTED (err u108))
 (define-constant ERR-EMERGENCY-NOT-ACTIVE (err u109))
+(define-constant ERR-VESTING-NOT-UNLOCKED (err u110))
+(define-constant ERR-VESTING-ALREADY-CLAIMED (err u111))
+(define-constant ERR-MAX-VESTING-SCHEDULES (err u112))
 
 (define-constant MAX-HEIRS u5)
 (define-constant PERCENTAGE-POINTS u10000)
 (define-constant EMERGENCY-VOTING-BLOCKS u2628)
 (define-constant EMERGENCY-THRESHOLD u6667)
 (define-constant EMERGENCY-TIMEOUT-BLOCKS u5256)
+(define-constant MAX-VESTING-SCHEDULES u10)
 
 (define-data-var contract-owner principal tx-sender)
 (define-data-var last-activity uint stacks-block-height)
@@ -21,6 +25,7 @@
 (define-data-var total-heirs uint u0)
 (define-data-var emergency-voting-start uint u0)
 (define-data-var emergency-votes uint u0)
+(define-data-var vesting-schedule-count uint u0)
 
 (define-map heirs 
     principal 
@@ -30,6 +35,11 @@
 (define-map emergency-voters
     principal
     bool
+)
+
+(define-map vesting-schedules
+    uint
+    {beneficiary: principal, amount: uint, unlock-height: uint, claimed: bool}
 )
 
 (define-read-only (get-owner)
@@ -91,6 +101,21 @@
 
 (define-read-only (has-voted-emergency (voter principal))
     (default-to false (map-get? emergency-voters voter))
+)
+
+(define-read-only (get-vesting-schedule (schedule-id uint))
+    (map-get? vesting-schedules schedule-id)
+)
+
+(define-read-only (get-vesting-schedule-count)
+    (var-get vesting-schedule-count)
+)
+
+(define-read-only (is-vesting-unlocked (schedule-id uint))
+    (match (map-get? vesting-schedules schedule-id)
+        schedule (>= stacks-block-height (get unlock-height schedule))
+        false
+    )
 )
 
 (define-public (update-activity)
@@ -177,6 +202,7 @@
 (define-public (transfer-ownership (new-owner principal))
     (begin
         (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+        (asserts! (not (is-eq new-owner (var-get contract-owner))) ERR-INVALID-PERCENTAGE)
         (var-set contract-owner new-owner)
         (ok true)
     )
@@ -243,5 +269,51 @@
         (var-set emergency-voting-start u0)
         (var-set emergency-votes u0)
         (ok true)
+    )
+)
+
+(define-public (create-vesting-schedule (beneficiary principal) (amount uint) (unlock-height uint))
+    (let (
+        (schedule-id (var-get vesting-schedule-count))
+    )
+        (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+        (asserts! (< schedule-id MAX-VESTING-SCHEDULES) ERR-MAX-VESTING-SCHEDULES)
+        (asserts! (> unlock-height stacks-block-height) ERR-INVALID-BLOCKS)
+        (asserts! (> amount u0) ERR-INVALID-PERCENTAGE)
+        (asserts! (not (is-eq beneficiary (var-get contract-owner))) ERR-INVALID-PERCENTAGE)
+        
+        (map-set vesting-schedules schedule-id {
+            beneficiary: beneficiary,
+            amount: amount,
+            unlock-height: unlock-height,
+            claimed: false
+        })
+        (var-set vesting-schedule-count (+ schedule-id u1))
+        (ok schedule-id)
+    )
+)
+
+(define-public (claim-vesting (schedule-id uint))
+    (let (
+        (schedule-count (var-get vesting-schedule-count))
+        (schedule (unwrap! (map-get? vesting-schedules schedule-id) ERR-HEIR-NOT-FOUND))
+        (beneficiary (get beneficiary schedule))
+        (amount (get amount schedule))
+        (unlock-height (get unlock-height schedule))
+        (claimed (get claimed schedule))
+    )
+        (asserts! (< schedule-id schedule-count) ERR-HEIR-NOT-FOUND)
+        (asserts! (is-eq tx-sender beneficiary) ERR-NOT-AUTHORIZED)
+        (asserts! (>= stacks-block-height unlock-height) ERR-VESTING-NOT-UNLOCKED)
+        (asserts! (not claimed) ERR-VESTING-ALREADY-CLAIMED)
+        
+        (map-set vesting-schedules schedule-id {
+            beneficiary: beneficiary,
+            amount: amount,
+            unlock-height: unlock-height,
+            claimed: true
+        })
+        
+        (as-contract (stx-transfer? amount tx-sender beneficiary))
     )
 )
