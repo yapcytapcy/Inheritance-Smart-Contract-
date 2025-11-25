@@ -11,6 +11,8 @@
 (define-constant ERR-VESTING-NOT-UNLOCKED (err u110))
 (define-constant ERR-VESTING-ALREADY-CLAIMED (err u111))
 (define-constant ERR-MAX-VESTING-SCHEDULES (err u112))
+(define-constant ERR-INSUFFICIENT-BALANCE (err u113))
+(define-constant ERR-INVALID-AMOUNT (err u114))
 
 (define-constant MAX-HEIRS u5)
 (define-constant PERCENTAGE-POINTS u10000)
@@ -26,6 +28,7 @@
 (define-data-var emergency-voting-start uint u0)
 (define-data-var emergency-votes uint u0)
 (define-data-var vesting-schedule-count uint u0)
+(define-data-var total-withdrawn uint u0)
 
 (define-map heirs 
     principal 
@@ -116,6 +119,14 @@
         schedule (>= stacks-block-height (get unlock-height schedule))
         false
     )
+)
+
+(define-read-only (get-total-withdrawn)
+    (var-get total-withdrawn)
+)
+
+(define-read-only (get-contract-balance)
+    (stx-get-balance (as-contract tx-sender))
 )
 
 (define-public (update-activity)
@@ -315,5 +326,40 @@
         })
         
         (as-contract (stx-transfer? amount tx-sender beneficiary))
+    )
+)
+
+(define-public (withdraw (amount uint))
+    (let (
+        (owner (var-get contract-owner))
+        (contract-balance (stx-get-balance (as-contract tx-sender)))
+    )
+        (asserts! (is-eq tx-sender owner) ERR-NOT-AUTHORIZED)
+        (asserts! (> amount u0) ERR-INVALID-AMOUNT)
+        (asserts! (<= amount contract-balance) ERR-INSUFFICIENT-BALANCE)
+        
+        (var-set last-activity stacks-block-height)
+        (var-set emergency-voting-start u0)
+        (var-set emergency-votes u0)
+        (var-set total-withdrawn (+ (var-get total-withdrawn) amount))
+        
+        (as-contract (stx-transfer? amount tx-sender owner))
+    )
+)
+
+(define-public (withdraw-all)
+    (let (
+        (owner (var-get contract-owner))
+        (contract-balance (stx-get-balance (as-contract tx-sender)))
+    )
+        (asserts! (is-eq tx-sender owner) ERR-NOT-AUTHORIZED)
+        (asserts! (> contract-balance u0) ERR-INSUFFICIENT-BALANCE)
+        
+        (var-set last-activity stacks-block-height)
+        (var-set emergency-voting-start u0)
+        (var-set emergency-votes u0)
+        (var-set total-withdrawn (+ (var-get total-withdrawn) contract-balance))
+        
+        (as-contract (stx-transfer? contract-balance tx-sender owner))
     )
 )
